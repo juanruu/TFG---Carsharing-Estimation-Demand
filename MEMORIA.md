@@ -32,6 +32,28 @@
 
 ---
 
+## 📁 Estructura del Repositorio
+
+```
+TFG---Carsharing-Estimation-Demand/
+├── cs_datasets/              # Datos crudos (10 ciudades, 840K viajes)
+├── datasets/                 # Datos procesados
+│   ├── dataset_h3_multicidad.parquet
+│   └── [otros CSVs]
+├── results/                  # Resultados, modelos, figuras
+│   ├── lstm_pretrained.pt
+│   ├── mapa_h3_milan.png
+│   └── [gráficos, métricas]
+├── xgboost_solution.ipynb    # XGBoost: regresión + clasificación
+├── lstm_dataset_creation.ipynb # LSTM: preparación datos, H3, normalización
+├── lstm_predictions.ipynb    # LSTM: entrenamiento, evaluación, comparativa
+├── mapa_h3_milan.ipynb       # Visualización H3 en Milán
+├── MEMORIA.md                # Este archivo
+└── README.md
+```
+
+---
+
 ## 🏗️ Decisiones Arquitectónicas
 
 ### 1. **Discretización Espacial: H3 Hexagonal Indexing**
@@ -75,9 +97,28 @@
 
 ---
 
-### 3. **LSTM: Arquitectura para Series Temporales**
+### 3. **Domain Adaptation via Transfer Learning**
 
-**Por qué LSTM:**
+**Concepto clave:** El modelo se entrena en 9 ciudades (dominio conocido) y se evalúa en una ciudad nunca vista (dominio nuevo). **Misma tarea** (predecir demanda), **distinto dominio** (ciudad diferente, período diferente).
+
+**Terminología precisa:**
+- **Transfer Learning clásico** (ImageNet→Medical): tarea diferente, dominio diferente
+- **Domain Adaptation** (lo que hacemos): **tarea idéntica**, dominio diferente
+- **Zero-shot**: evaluación sin reentrenamiento en nuevo dominio
+- **Fine-tuning**: ajuste de pesos para adaptarse al nuevo dominio
+
+**Por qué funciona:**
+- El encoder LSTM aprende patrones **universales** de demanda urbana
+- Ciclos diarios: baja demanda 2-5am, picos laborales 7-9am, 5-7pm
+- Ciclos semanales: lunes ≠ viernes/sábado
+- Relaciones espaciales: zona céntrica → mayor demanda
+- Estos patrones transfieren a nueva ciudad sin reentrenamiento
+
+---
+
+### 4. **LSTM: Arquitectura para Series Temporales**
+
+**Por qué LSTM (complemento a XGBoost):**
 - ✅ Captura dependencias temporales no-lineales (XGBoost solo usa lags simples)
 - ✅ Memoria a largo plazo ideal para ciclos diarios/semanales
 - ✅ Arquitectura separable: encoder (LSTM) + head (Dense) → facilita transfer learning
@@ -184,32 +225,37 @@ wien         260544        236           0.56      68.98%
 
 ---
 
-## 🔄 Metodología: XGBoost vs LSTM
+## 🔄 Metodología: Dos Soluciones Complementarias
 
-### Pipeline General
-
-```
-Raw trips (10 ciudades) 
-    ↓
-[Spatial join a H3-7]
-    ↓
-[Temporal aggregation] → demanda por (city, h3_cell, date, hour)
-    ↓
-[Expand with zeros] → incluir horas sin viajes
-    ↓
-[Normalization] → z-score por celda
-    ↓
-[Feature engineering] → lags, cyclic encoding
-    ↓
-├─→ [SlidingWindowDataset] → ventanas T=24
-│       ↓
-│   [DataLoader] → minibatches de 512
-│       ↓
-│   [LSTM] → entrenamiento
-│
-└─→ [XGBoost Direct] → features estáticas
+### Arquitectura General
 
 ```
+FASE 1: DATA PREPARATION (Común a ambas soluciones)
+├─ Raw trips (10 ciudades, 840K viajes)
+├─ Spatial join a H3-7 (capa común para todas las ciudades)
+├─ Temporal aggregation → demanda (city, h3_cell, date, hour)
+├─ Expand with zeros → incluir horas sin viajes (70-90% ceros)
+├─ Normalization → z-score por celda
+└─ Feature engineering → lags (1h, 24h, 168h), cyclic encoding
+
+FASE 2A: SOLUCIÓN XGBOOST
+├─ Features: hour, day_of_week, month, lag_1h, lag_24h, rolling_mean_3h
+├─ Training: XGBRegressor + XGBClassifier (3 clases)
+├─ Evaluation: MAE, RMSE, R² (regresión) + Accuracy, F1 (clasificación)
+└─ Scope: Monociudad (Milán) como baseline
+
+FASE 2B: SOLUCIÓN LSTM (Domain Adaptation)
+├─ SlidingWindowDataset → ventanas T=24h
+├─ DataLoader → minibatches de 512
+├─ Training: LSTM preentrenado en 9 ciudades (2015)
+├─ Evaluation: Zero-shot (München 2016), fine-tuning (7 días)
+└─ Scope: Multi-ciudad + domain adaptation a ciudad nueva
+```
+
+**Importancia de ambas soluciones:**
+- **XGBoost:** Baseline rápido, interpretable, compara directamente con literatura
+- **LSTM:** Captura patrones temporales, valida domain adaptation multi-ciudad
+- **Preprocesamiento:** Punto crítico común (H3 spatial discretization, normalization, handling sparsity)
 
 ### Split de Datos
 
@@ -267,7 +313,14 @@ Epoch 16: EARLY STOPPING (patience=8 epochs sin mejorar)
 
 ### LSTM Results (H3-7)
 
-#### Per-City Validation (últimos 7 días, 9 ciudades)
+#### Domain Adaptation Results
+
+**Domain Adaptation Setup:**
+- **Source domain (training):** 9 ciudades europeas, período 2015 (May-Jul)
+- **Target domain (test):** München, período 2016 (Mar-May) — distinto año, geografía nórdica
+- **Evaluation:** Zero-shot (0 fine-tuning) y fine-tuning (7 días datos München)
+
+#### Per-City Validation (últimos 7 días, 9 ciudades de entrenamiento)
 
 | Ciudad | MAE | RMSE | R² |
 |--------|-----|------|-----|
@@ -410,29 +463,38 @@ FRONT MATTER
 
 ### ✅ Completado
 
-1. **Pipeline H3 Multi-ciudad**
-   - Notebook: `pipeline_h3_multicidad.ipynb`
-   - Salida: `dataset_h3_multicidad.parquet` (2.3M filas)
-   - Resolución: H3-7 (balance optimal ceros vs granularidad)
+**SOLUCIÓN 1: XGBOOST (Baseline)**
+1. Notebook: `xgboost_solution.ipynb`
+   - Regresión: MAE=0.92, RMSE=1.47, R²=0.566
+   - Clasificación: Accuracy=63.2%, F1=0.633
+   - Dataset: Milán (ACE zones), features estáticas + lags
+   - Benchmark de referencia para comparación
 
-2. **LSTM Preentrenado**
-   - Notebook: `lstm_multicidad.ipynb`
-   - Arquitectura: 2 capas LSTM + cabeza densa
+**SOLUCIÓN 2: LSTM (Domain Adaptation)**
+2. Notebook: `lstm_dataset_creation.ipynb`
+   - H3-7 spatial discretization (capa común 10 ciudades)
+   - Normalización z-score por celda
+   - Features: temporal (cyclic encoding) + lags
+   - Salida: `datasets/dataset_h3_multicidad.parquet` (2.3M filas)
+
+3. Notebook: `lstm_predictions.ipynb`
+   - Arquitectura: 2 capas LSTM + dense head
    - Preentrenamiento: 9 ciudades (940K ventanas)
-   - Zero-shot: München (R²=0.6375)
-   - Fine-tuning: München (R²=0.6632)
+   - Zero-shot Munich: R²=0.6375 (sin reentrenamiento)
+   - Fine-tuning: R²=0.6632 (7 días)
+   - Modelos: `results/lstm_pretrained.pt`
 
-3. **Visualización H3**
-   - Notebook: `mapa_h3_milan.ipynb`
-   - Salida: `mapa_h3_milan.png` (mapa hexagonal con demanda)
+**PREPROCESAMIENTO & ANALYSIS**
+4. Notebook: `mapa_h3_milan.ipynb`
+   - Visualización: `results/mapa_h3_milan.png`
+   - Análisis espacial de demanda por H3 cell
 
-4. **Comparativa Modelos**
-   - XGBoost vs LSTM completa
-   - Transfer learning validado
-
-5. **GitHub**
-   - 3 notebooks subidos ✅
+**DOCUMENTACIÓN & VERSIONADO**
+5. GitHub
+   - 4 notebooks con nombres actualizados ✅
+   - MEMORIA.md con contexto completo ✅
    - Commits documentados ✅
+   - Estructura clara (datasets/, results/) ✅
 
 ### 🔄 En Progreso
 
@@ -516,9 +578,13 @@ https://github.com/juanruu/TFG---Carsharing-Estimation-Demand
 ```
 
 ### Notebooks Principales
-1. `pipeline_h3_multicidad.ipynb` — Construcción dataset
-2. `lstm_multicidad.ipynb` — Entrenamiento LSTM
-3. `mapa_h3_milan.ipynb` — Visualización H3
+
+| Notebook | Propósito | Entrada | Salida |
+|----------|-----------|---------|--------|
+| `xgboost_solution.ipynb` | XGBoost baseline (regresión + clasificación) | `cs_datasets/*.txt` | XGBoost metrics |
+| `lstm_dataset_creation.ipynb` | H3 discretization, normalization, feature engineering | `cs_datasets/*.txt` | `datasets/dataset_h3_multicidad.parquet` |
+| `lstm_predictions.ipynb` | LSTM training, zero-shot eval, fine-tuning, comparison | `datasets/dataset_h3_multicidad.parquet` | `results/lstm_pretrained.pt`, métricas |
+| `mapa_h3_milan.ipynb` | Visualización de celdas H3 | `datasets/dataset_h3_multicidad.parquet` | `results/mapa_h3_milan.png` |
 
 ### Datasets
 - `dataset_h3_multicidad.parquet` (1.8 GB) — Dato principal
