@@ -372,77 +372,75 @@ LSTM Fine-tuned München (7d)    0.9590 1.5712  0.6632
 
 ## 📚 Estructura del TFG
 
-### Capítulos (Actualizado)
+### Capítulos (Actualizado — 23 Abril 2026)
+
+**Cambio estructural:** se fusionan "State of the Art" y "Enabling Technologies" en un único capítulo 2 "Background". Los antiguos apéndices "Impact" y "Budget" pasan a ser capítulos regulares. Estructura final: **7 capítulos**.
 
 ```
 1. INTRODUCTION
-   ├─ 1.1 Motivation and Problem Statement
-   ├─ 1.2 Research Objectives
-   └─ 1.3 Document Structure
+   ├─ 1.1 Context
+   ├─ 1.2 Project Goals
+   └─ 1.3 Structure of this Document
 
-2. STATE OF THE ART AND RELATED WORK
-   ├─ 2.1 Evolution of Carsharing Systems
-   ├─ 2.2 Demand Prediction in Urban Mobility
-   ├─ 2.3 Similar Solutions and Benchmarks
-   └─ 2.4 Research Gap and Contribution
+2. BACKGROUND
+   ├─ 2.1 Enabling Technologies
+   │   ├─ 2.1.1 Python Scientific Stack
+   │   ├─ 2.1.2 H3 Hexagonal Hierarchical Index
+   │   ├─ 2.1.3 Machine Learning Fundamentals
+   │   ├─ 2.1.4 LSTM Networks
+   │   ├─ 2.1.5 Transfer Learning and Domain Adaptation
+   │   └─ 2.1.6 Feature Engineering and Normalisation
+   └─ 2.2 Related Work
+       ├─ 2.2.1 Evolution of Carsharing Systems
+       ├─ 2.2.2 Demand Prediction in Urban Mobility
+       └─ 2.2.3 Research Gap and Contribution
 
-3. ENABLING TECHNOLOGIES
-   ├─ 3.1 H3 Hexagonal Indexing
-   ├─ 3.2 XGBoost (Extreme Gradient Boosting)
-   ├─ 3.3 LSTM Networks
-   ├─ 3.4 Transfer Learning
-   └─ 3.5 Normalization and Feature Engineering
+3. ARCHITECTURE AND METHODOLOGY
+   ├─ 3.1 Data Acquisition and Exploration
+   │   ├─ 3.1.1 Data Sources (10 European cities)
+   │   ├─ 3.1.2 Data Cleaning and Standardisation
+   │   └─ 3.1.3 Exploratory Data Analysis
+   ├─ 3.2 First Predictive Framework: XGBoost (City of Milan)
+   │   ├─ 3.2.1 Spatial Aggregation: ACE Zoning
+   │   ├─ 3.2.2 Feature Engineering
+   │   ├─ 3.2.3 Model Architecture and Hyperparameters
+   │   └─ 3.2.4 Training Procedure
+   └─ 3.3 Second Predictive Framework: LSTM with Cross-City Domain Adaptation
+       ├─ 3.3.1 Spatial Discretisation: H3 Hexagonal Grid
+       ├─ 3.3.2 Feature Engineering (cyclic encoding + sliding window)
+       ├─ 3.3.3 Model Architecture
+       ├─ 3.3.4 Training Procedure
+       └─ 3.3.5 Transfer Learning Setup
 
-4. ARCHITECTURE AND METHODOLOGY
-   ├─ 4.1 Data Acquisition and Exploration
-   │   ├─ 4.1.1 Dataset Description (10 ciudades)
-   │   ├─ 4.1.2 Exploratory Data Analysis
-   │   └─ 4.1.3 H3 Spatial Discretization
-   ├─ 4.2 Data Standardization Pipeline
-   │   ├─ 4.2.1 Temporal Aggregation
-   │   ├─ 4.2.2 Missing Values Handling
-   │   ├─ 4.2.3 Normalization Strategy
-   │   └─ 4.2.4 Train/Val/Test Split
-   ├─ 4.3 XGBoost Model
-   │   ├─ 4.3.1 Architecture and Hyperparameters
-   │   ├─ 4.3.2 Feature Selection
-   │   └─ 4.3.3 Training Procedure
-   └─ 4.4 LSTM Model
-       ├─ 4.4.1 Architecture
-       ├─ 4.4.2 Sliding Window Dataset
-       ├─ 4.4.3 Training Strategy
-       ├─ 4.4.4 Transfer Learning
-       └─ 4.4.5 Evaluation Metrics
+4. TRAINING, EVALUATION AND MODEL COMPARISON
+   ├─ 4.1 XGBoost Results (Milan)
+   │   ├─ 4.1.1 Regression Model
+   │   ├─ 4.1.2 Classification Model
+   │   └─ 4.1.3 Feature Importance
+   ├─ 4.2 LSTM Results
+   │   ├─ 4.2.1 Pretraining on 9 Cities
+   │   ├─ 4.2.2 Per-City Validation Metrics
+   │   ├─ 4.2.3 Zero-Shot Transfer to Unseen City
+   │   └─ 4.2.4 Fine-tuning Results
+   ├─ 4.3 Comparative Analysis
+   │   ├─ 4.3.1 Predictive Accuracy
+   │   ├─ 4.3.2 Data Requirements and Computational Cost
+   │   ├─ 4.3.3 Interpretability
+   │   └─ 4.3.4 Generalisation Capability
+   └─ 4.4 Visualisations and Error Analysis
 
-5. TRAINING, EVALUATION AND MODEL COMPARISON
-   ├─ 5.1 XGBoost Results
-   │   ├─ 5.1.1 Regression Model
-   │   ├─ 5.1.2 Classification Model
-   │   └─ 5.1.3 Learning Curves
-   ├─ 5.2 LSTM Results
-   │   ├─ 5.2.1 Pretraining on 9 Cities
-   │   ├─ 5.2.2 Per-City Validation Metrics
-   │   ├─ 5.2.3 Zero-Shot Transfer Learning
-   │   └─ 5.2.4 Fine-tuning in München
-   ├─ 5.3 Comparative Analysis
-   │   ├─ 5.3.1 Performance Comparison Table
-   │   ├─ 5.3.2 Why LSTM Outperforms XGBoost
-   │   ├─ 5.3.3 Transfer Learning Insights
-   │   └─ 5.3.4 Limitations and Challenges
-   └─ 5.4 Visualizations and Error Analysis
+5. CONCLUSIONS
+   ├─ 5.1 Summary of Findings
+   ├─ 5.2 Research Contributions
+   ├─ 5.3 Practical Implications
+   └─ 5.4 Future Work
 
-6. CONCLUSIONS
-   ├─ 6.1 Summary of Findings
-   ├─ 6.2 Research Contributions
-   ├─ 6.3 Practical Implications
-   └─ 6.4 Future Work
+6. IMPACT AND SUSTAINABILITY
+   ├─ 6.1 Societal Impact
+   ├─ 6.2 Environmental Considerations
+   └─ 6.3 Economic Impact
 
-7. IMPACT AND SUSTAINABILITY
-   ├─ 7.1 Societal Impact
-   ├─ 7.2 Environmental Considerations
-   └─ 7.3 Economic Impact
-
-8. PROJECT BUDGET
+7. PROJECT BUDGET
 
 APPENDICES
 ├─ A. Detailed H3 Grid Visualization (Milán)
@@ -456,6 +454,18 @@ FRONT MATTER
 ├─ Abstract (inglés)
 └─ Agradecimientos
 ```
+
+### Decisiones estructurales (23 Abril 2026)
+
+1. **Fusión Background**: los antiguos capítulos "State of the Art" y "Enabling Technologies" se integran en un único capítulo 2 con dos secciones (2.1 Enabling Technologies + 2.2 Related Work). Esto evita redundancia y facilita una transición natural del contexto técnico a la revisión bibliográfica.
+
+2. **Arquitectura con estructura híbrida**: se mantiene una sección común 3.1 para adquisición y exploración de datos (limpieza, estandarización, EDA), pero los detalles de preprocesamiento específicos de cada modelo (agregación ACE para XGBoost vs. discretización H3 para LSTM, feature engineering distinto) se describen dentro de las secciones 3.2 y 3.3 respectivamente. Así se evita fragmentar la narrativa de cada framework.
+
+3. **XGBoost primero, LSTM después**: se mantiene el orden narrativo "enfoque inicial → contribución principal" tanto en el capítulo 3 (metodología) como en el 4 (resultados), seguido siempre de análisis comparativo.
+
+4. **Ambos modelos al mismo nivel**: tras la indicación del tutor, los objetivos del proyecto tratan XGBoost y LSTM como contribuciones equivalentes. La comparación sistemática entre ambos se formula como el cuarto objetivo (G4) y es el eje vertebrador del capítulo 4.
+
+5. **Impact y Budget como capítulos**: se sacan del apéndice y pasan a ser capítulos regulares (6 y 7), siguiendo la convención de la plantilla GSI-ETSIT más reciente.
 
 ---
 
