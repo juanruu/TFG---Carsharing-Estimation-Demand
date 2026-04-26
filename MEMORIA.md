@@ -36,21 +36,25 @@
 
 ```
 TFG---Carsharing-Estimation-Demand/
-├── cs_datasets/              # Datos crudos (10 ciudades, 840K viajes)
-├── datasets/                 # Datos procesados
+├── cs_datasets/                     # Datos crudos (10 ciudades, ~828K viajes)
+├── datasets/                        # Datos procesados
 │   ├── dataset_h3_multicidad.parquet
 │   └── [otros CSVs]
-├── results/                  # Resultados, modelos, figuras
+├── results/                         # Resultados, modelos, figuras
 │   ├── lstm_pretrained.pt
 │   ├── mapa_h3_milan.png
 │   └── [gráficos, métricas]
-├── xgboost_solution.ipynb    # XGBoost: regresión + clasificación
-├── lstm_dataset_creation.ipynb # LSTM: preparación datos, H3, normalización
-├── lstm_predictions.ipynb    # LSTM: entrenamiento, evaluación, comparativa
-├── mapa_h3_milan.ipynb       # Visualización H3 en Milán
-├── MEMORIA.md                # Este archivo
+├── trip_cleaning.py                 # Módulo compartido de limpieza (XGBoost + LSTM)
+├── apply_cleaning_patches.py        # Script idempotente para parchear notebooks
+├── xgboost_solution.ipynb           # XGBoost: regresión + clasificación (Milán)
+├── lstm_dataset_creation.ipynb      # LSTM: ETL crudos → parquet H3 multi-ciudad
+├── lstm_predictions.ipynb           # LSTM: entrenamiento, evaluación, transfer
+├── mapa_h3_milan.ipynb              # Visualización H3 en Milán
+├── MEMORIA.md                       # Este archivo
 └── README.md
 ```
+
+> 📝 **Nota 27 abril 2026:** los notebooks `lstm_dataset_creation` y `lstm_predictions` estaban históricamente intercambiados (el de "predictions" contenía el ETL y viceversa). Se renombraron en esta sesión para que el nombre refleje el contenido real.
 
 ---
 
@@ -94,6 +98,9 @@ TFG---Carsharing-Estimation-Demand/
 - Problema: clase "moderada" confundida (precision 0.56)
 
 **Conclusión:** Buen baseline pero R²=0.57 indica margen de mejora (no captura varianza).
+
+**Hallazgo metodológico (ACE redundancy):**
+Se exploró la inclusión de variables socioeconómicas del CPA 2011 (`population_resident`, `student_count`, `outbound_commuters`, `employed_resident`, `pop_density`) como features adicionales en XGBoost. El análisis posterior de explicabilidad (SHAP + `feature_importance`) mostró que el **identificador de zona ACE concentra la mayor parte del peso predictivo**, mientras que las variables socioeconómicas explícitas aportan poco. Interpretación: ISTAT construye las ACE precisamente agrupando unidades territoriales con perfil socioeconómico homogéneo, por lo que el ACE-id ya las encapsula implícitamente. **El modelo final usa solo el ACE-id + features temporales (hour, dow, lags)**, manteniéndose como sensitivity check con/sin socio. Este hallazgo es **una de las contribuciones metodológicas del TFG** y no aparece en el paper de Boldrini et al. (2019), que mantiene los análisis explicativo y predictivo en bloques separados.
 
 ---
 
@@ -190,8 +197,10 @@ criterion = nn.HuberLoss(delta=1.0)
 | Roma | 101,483 | 2015-05-17 a 2015-07-01 | 46 días |
 | Stockholm | 16,835 | 2015-05-17 a 2015-07-01 | 46 días |
 | Torino | 25,579 | 2015-05-17 a 2015-07-01 | 46 días |
-| Wien | 158,069 | 2015-05-17 a 2015-07-01 | 46 días |
-| **TOTAL** | **840,060** | — | — |
+| Wien | 146,517 | 2015-05-17 a 2015-07-01 | 46 días |
+| **TOTAL** | **828,508** | — | — |
+
+> ⚠️ **Corrección 27 abril 2026:** la cifra previa para Wien (158.069 viajes) era un error de transcripción; el fichero `wien_trips.txt` contiene realmente 146.517 filas (146.516 viajes + cabecera). Total recalculado y verificado contra los `wc -l` de los diez ficheros.
 
 **Notas críticas:**
 - München: **período diferente (2016)** → ideal como ciudad de test (transfer learning cross-temporal)
@@ -222,6 +231,54 @@ wien         260544        236           0.56      68.98%
      hour_sin, hour_cos, dow_sin, dow_cos, target_demanda, 
      lag_1h, lag_24h, lag_168h, rolling_mean_3h
    - Total: 2,321,520 filas
+
+> ⚠️ **Pendiente de regenerar (27 abr 2026):** estas estadísticas corresponden al parquet generado **antes** de introducir el módulo de cleaning compartido (`trip_cleaning.py`). Tras volver a ejecutar `lstm_dataset_creation.ipynb`, las cifras de filas, celdas y porcentajes de ceros cambiarán ligeramente (≈4-5% menos viajes por ciudad).
+
+---
+
+## 🧹 Pipeline de Limpieza Compartido
+
+**Decisión arquitectónica (27 abr 2026):** ambos frameworks (XGBoost-Milán y LSTM-multiciudad) operaban con criterios de limpieza distintos, lo que invalidaba parcialmente la comparación cruzada. Se centraliza la lógica en un módulo único `trip_cleaning.py`, importado por los dos notebooks.
+
+### Filtros aplicados
+
+| Filtro | Umbral | Justificación |
+|--------|--------|---------------|
+| **Distancia mínima** | ≥ 100 m | Descarta reservas degeneradas (vehículo no se movió) |
+| **Duración mínima** | ≥ 1 min | Descarta glitches de telemetría / reservas canceladas |
+| **Duración máxima** | ≤ 480 min (8 h) | Free-floating capa rentings; >8h ≈ vehículo varado / mantenimiento |
+| **Outliers geográficos** | percentil [0.1%, 99.9%] de lat/lon **por ciudad** | Filtra errores de GPS sin necesidad de bounding boxes hardcoded |
+| **Duplicados exactos** | mismo (vin, s_date, s_coord) | Descarta artefactos de re-ingesta |
+
+### Auditoría del cleaning (27 abr 2026)
+
+| city | initial | -short_dist | -dur_anom | -geo | -dup | final | %removed |
+|---|---|---|---|---|---|---|---|
+| amsterdam | 51.277 | 2.735 | 437 | 193 | 0 | 47.912 | 6.56% |
+| berlin | 225.808 | 7.027 | 1.578 | 694 | 0 | 216.509 | 4.12% |
+| firenze | 19.355 | 890 | 266 | 38 | 0 | 18.161 | 6.17% |
+| kobenhavn | 12.610 | 966 | 169 | 46 | 0 | 11.429 | 9.37% |
+| milano | 158.068 | 3.980 | 1.481 | 459 | 0 | 152.148 | 3.75% |
+| muenchen | 82.522 | 1.555 | 677 | 265 | 0 | 80.025 | 3.03% |
+| roma | 101.482 | 3.578 | 1.237 | 385 | 0 | 96.282 | 5.12% |
+| stockholm | 16.834 | 908 | 119 | 33 | 0 | 15.774 | 6.30% |
+| torino | 25.578 | 956 | 224 | 96 | 0 | 24.302 | 4.99% |
+| wien | 146.516 | 4.185 | 1.669 | 286 | 0 | 140.376 | 4.19% |
+| **TOTAL** | **840.050** | **26.780** | **7.857** | **2.495** | **0** | **802.918** | **4.42%** |
+
+### Hallazgos interpretables
+
+- **Filtro dominante:** distancia <100 m (3.2% del total), refleja la prevalencia de reservas degeneradas en operaciones reales de free-floating.
+- **Duración:** ~1% adicional, mayoría de viajes legítimos respeta la franja [1 min, 8 h].
+- **Outliers geográficos:** ~0.3%, en línea con el orden teórico esperado (~0.2%) → confirma que el percentil 99.9% es un buen umbral conservador.
+- **Duplicados:** 0 en todas las ciudades → buena calidad de los datos brutos del operador.
+- **København destaca** con 9.37% (casi el doble de la media). Probable causa: al ser la ciudad más pequeña, los filtros pesan proporcionalmente más sobre su volumen.
+- **München y Milán son las más limpias** (3.03% y 3.75%) → refuerza la elección de München como ciudad de test.
+
+### Decisión de timezone
+
+- **XGBoost (Milán):** trabaja en **hora local** de Milán (no convierte a UTC). Justificación: la demanda urbana es intrínsecamente local-horaria.
+- **LSTM (multi-ciudad):** convierte a **UTC** para tener referencia absoluta común. La hora-del-día se recupera localmente cuando hace falta.
 
 ---
 
@@ -499,22 +556,47 @@ FRONT MATTER
    - Visualización: `results/mapa_h3_milan.png`
    - Análisis espacial de demanda por H3 cell
 
+**PIPELINE DE LIMPIEZA (27 abr 2026)**
+5. Módulo `trip_cleaning.py`
+   - Centraliza la limpieza para ambos frameworks
+   - 5 filtros: distancia, duración (×2), outliers geográficos, duplicados
+   - Función `clean_trips(df, city)` + utilidades `parse_date_local`, `parse_date_utc`, `parse_coord`, `trip_quality_summary`
+6. Script `apply_cleaning_patches.py`
+   - Parchea ambos notebooks con `nbformat` (sin riesgo de corromper JSON)
+   - Idempotente, crea backups `.bak`
+7. Auditoría completa del cleaning ejecutada (4.42% viajes descartados global)
+
 **DOCUMENTACIÓN & VERSIONADO**
-5. GitHub
+8. GitHub
    - 4 notebooks con nombres actualizados ✅
    - MEMORIA.md con contexto completo ✅
    - Commits documentados ✅
    - Estructura clara (datasets/, results/) ✅
 
+**ESCRITURA TFG (27 abr 2026)**
+9. Capítulo 3 — Architecture and Methodology
+   - 3.1 introducción: redactado en inglés (1 pág, contextualiza car2go + 3 subsecciones)
+   - 3.1.1 Data Sources: redactado en inglés con `longtable` LaTeX (incluye datasets auxiliares ISTAT)
+   - Tabla 3.1 (volumen por ciudad) en LaTeX con `booktabs`
+   - 3.1.2 Data Cleaning: pendiente de redactar (auditoría disponible)
+   - 3.1.3 EDA: estrategia decidida (trip-level only, sin H3 ni ACE)
+
 ### 🔄 En Progreso
 
 1. **Escritura LaTeX del TFG**
-   - Estructura actualizada (cap. 2 nuevo)
-   - Estado del Arte pendiente
-   - Arquitectura (cap 4) pendiente
-   - Training/Eval/Comparison (cap 5) pendiente
+   - Cap. 3.1 introducción + 3.1.1: ✅ pegado en Overleaf
+   - Cap. 3.1.2: pendiente (con números reales de auditoría)
+   - Cap. 3.1.3: pendiente (gráficos: perfil horario, semanal, % ceros, volumen por ciudad)
+   - Cap. 3.2 (XGBoost) + 3.3 (LSTM): pendiente
+   - Cap. 4 (Resultados): pendiente
+   - Cap. 2 (Background + Related Work): pendiente
 
-2. **Sincronización Overleaf-GitHub**
+2. **Regeneración de `dataset_h3_multicidad.parquet`**
+   - El parquet actual se hizo con datos sin limpiar
+   - Tras parchear notebooks con `apply_cleaning_patches.py`, ejecutar `lstm_dataset_creation.ipynb` de nuevo
+   - Reentrenar LSTM y XGBoost para validar que las métricas no cambian sustancialmente
+
+3. **Sincronización Overleaf-GitHub**
    - Opción elegida: copiar-pegar manual (sin pago)
    - Genera contenido LaTeX → copia a Overleaf
 
@@ -599,10 +681,45 @@ https://github.com/juanruu/TFG---Carsharing-Estimation-Demand
 ### Datasets
 - `dataset_h3_multicidad.parquet` (1.8 GB) — Dato principal
 - `cs_datasets/*.txt` (845 KB total) — Datos crudos
+- `dati-cpa_2011/` — Indicadores socioeconómicos ISTAT (CPA 2011) usados en XGBoost
+- `mapa_lombardia/`, `mapa_lazio/`, `mapa_piamonte/`, `mapa_toscana/` — Shapefiles regionales con ACE
 
 ### Documentación
 - `eda_preliminar.ipynb` — Análisis inicial con XGBoost
 - `MEMORIA.md` (este archivo) — Contexto del proyecto
+
+### Referencias Académicas Clave
+
+**Boldrini, C., Bruno, R., & Conti, M. (2019).** *Weak signals in the mobility landscape: car sharing in ten European cities.* **EPJ Data Science**, 8(1).
+https://doi.org/10.1140/epjds/s13688-019-0186-8
+
+> Es la **referencia central** del estado del arte. Usa el mismo dataset car2go de las 10 ciudades. Hace dos análisis disjuntos: (a) explicativo con censo ISTAT 2011 a nivel ACE, y (b) predictivo con Random Forest sobre rejilla regular de 500m × 500m. **No integra los indicadores socioeconómicos en el modelo predictivo** — los analiza en bloques separados.
+>
+> **Research gap que cubre este TFG:**
+> 1. Integra socio-features + grid en un único modelo predictivo (XGBoost) y descubre por explicabilidad la redundancia del identificador ACE.
+> 2. Extiende a deep learning (LSTM) con domain adaptation cross-city.
+> 3. Evalúa transfer learning a ciudad no vista (München) en zero-shot y fine-tuning.
+
+```bibtex
+@article{boldrini2019weaksignals,
+    author  = {Boldrini, Chiara and Bruno, Raffaele and Conti, Marco},
+    title   = {Weak signals in the mobility landscape: car sharing in ten European cities},
+    journal = {EPJ Data Science},
+    volume  = {8},
+    number  = {1},
+    pages   = {7},
+    year    = {2019},
+    doi     = {10.1140/epjds/s13688-019-0186-8}
+}
+
+@misc{istat2011basi,
+    author       = {{Italian National Institute of Statistics (ISTAT)}},
+    title        = {Basi territoriali e variabili censuarie},
+    year         = {2011},
+    howpublished = {\url{https://www.istat.it/notizia/basi-territoriali-e-variabili-censuarie/}},
+    note         = {Accessed: April 2026}
+}
+```
 
 ---
 
