@@ -1,6 +1,6 @@
 # MEMORIA DEL PROYECTO TFG — Carsharing Demand Estimation
 
-**Fecha última actualización:** Abril 2026  
+**Fecha última actualización:** Mayo 2026  
 **Autor:** Juan Perpic  
 **Repositorio:** [TFG---Carsharing-Estimation-Demand](https://github.com/juanruu/TFG---Carsharing-Estimation-Demand)
 
@@ -28,7 +28,7 @@
 - Planificación de mantenimiento
 - Estrategia de precios dinámicos
 
-**Enfoque principal:** Comparar XGBoost (baseline) con LSTM multi-ciudad preentrenado, con transfer learning a ciudades no vistas.
+**Enfoque principal:** Desarrollar un framework de predicción de demanda y explorar dos alternativas de modelado — XGBoost (baseline) y LSTM multi-ciudad con domain adaptation a ciudades no vistas — evaluándolas de forma sistemática.
 
 ---
 
@@ -38,6 +38,7 @@
 TFG---Carsharing-Estimation-Demand/
 ├── cs_datasets/                     # Datos crudos (10 ciudades, ~828K viajes)
 ├── datasets/                        # Datos procesados
+│   ├── trips_cleaned.parquet        # Dataset limpio compartido (10 ciudades)
 │   ├── dataset_h3_multicidad.parquet
 │   └── [otros CSVs]
 ├── results/                         # Resultados, modelos, figuras
@@ -45,9 +46,10 @@ TFG---Carsharing-Estimation-Demand/
 │   ├── mapa_h3_milan.png
 │   └── [gráficos, métricas]
 ├── trip_cleaning.py                 # Módulo compartido de limpieza (XGBoost + LSTM)
+├── build_cleaned_dataset.py         # Genera trips_cleaned.parquet (entrada común)
 ├── apply_cleaning_patches.py        # Script idempotente para parchear notebooks
 ├── xgboost_solution.ipynb           # XGBoost: regresión + clasificación (Milán)
-├── lstm_dataset_creation.ipynb      # LSTM: ETL crudos → parquet H3 multi-ciudad
+├── lstm_dataset_creation.ipynb      # LSTM: ETL limpio → parquet H3 multi-ciudad
 ├── lstm_predictions.ipynb           # LSTM: entrenamiento, evaluación, transfer
 ├── mapa_h3_milan.ipynb              # Visualización H3 en Milán
 ├── MEMORIA.md                       # Este archivo
@@ -55,6 +57,8 @@ TFG---Carsharing-Estimation-Demand/
 ```
 
 > 📝 **Nota 27 abril 2026:** los notebooks `lstm_dataset_creation` y `lstm_predictions` estaban históricamente intercambiados (el de "predictions" contenía el ETL y viceversa). Se renombraron en esta sesión para que el nombre refleje el contenido real.
+>
+> 📝 **Nota 25 mayo 2026:** se extrae la carga+limpieza de datos crudos a `build_cleaned_dataset.py`, que genera `datasets/trips_cleaned.parquet`. Los notebooks ya no cargan CSVs ni ejecutan cleaning directamente: `lstm_dataset_creation.ipynb` lee el parquet completo (10 ciudades) y `xgboost_solution.ipynb` lee solo las filas de Milán.
 
 ---
 
@@ -238,7 +242,18 @@ wien         260544        236           0.56      68.98%
 
 ## 🧹 Pipeline de Limpieza Compartido
 
-**Decisión arquitectónica (27 abr 2026):** ambos frameworks (XGBoost-Milán y LSTM-multiciudad) operaban con criterios de limpieza distintos, lo que invalidaba parcialmente la comparación cruzada. Se centraliza la lógica en un módulo único `trip_cleaning.py`, importado por los dos notebooks.
+**Decisión arquitectónica (27 abr 2026):** ambos frameworks (XGBoost-Milán y LSTM-multiciudad) operaban con criterios de limpieza distintos, lo que invalidaba parcialmente la comparación cruzada. Se centraliza la lógica en un módulo único `trip_cleaning.py`.
+
+**Reorganización (25 may 2026):** la ejecución del cleaning se extrae de los notebooks a un script independiente `build_cleaned_dataset.py`, que genera `datasets/trips_cleaned.parquet` con las 10 ciudades ya limpias. Los notebooks consumen este parquet como entrada (LSTM: completo; XGBoost: filtrado a Milán), garantizando que ambos operan sobre datos idénticos sin duplicar la lógica de carga+limpieza.
+
+```
+build_cleaned_dataset.py  →  datasets/trips_cleaned.parquet
+                                    │
+                    ┌────────────────┴────────────────┐
+                    ▼                                  ▼
+     lstm_dataset_creation.ipynb          xgboost_solution.ipynb
+        (10 ciudades, UTC, H3)            (solo Milán, local, ACE)
+```
 
 ### Filtros aplicados
 
@@ -282,18 +297,35 @@ wien         260544        236           0.56      68.98%
 
 ---
 
-## 🔄 Metodología: Dos Soluciones Complementarias
+## 🔄 Metodología: Un Framework, Dos Alternativas de Modelado
 
 ### Arquitectura General
 
 ```
-FASE 1: DATA PREPARATION (Común a ambas soluciones)
-├─ Raw trips (10 ciudades, 840K viajes)
-├─ Spatial join a H3-7 (capa común para todas las ciudades)
+FASE 0: CLEANING COMPARTIDO (build_cleaned_dataset.py)
+├─ Raw trips (10 ciudades, 840K viajes) ← cs_datasets/*.txt
+├─ Cleaning unificado (trip_cleaning.clean_trips)
+│   ├─ Filtro distancia (≥100m), duración (1-480min)
+│   ├─ Outliers geográficos (percentil 99.9% por ciudad)
+│   └─ Duplicados exactos
+└─ Salida: datasets/trips_cleaned.parquet (~803K viajes limpios)
+
+FASE 1A: PREPARACIÓN LSTM (lstm_dataset_creation.ipynb)
+├─ Lee trips_cleaned.parquet COMPLETO (10 ciudades)
+├─ Parseo fechas → UTC
+├─ Asignación H3-8 (~0.7 km²)
 ├─ Temporal aggregation → demanda (city, h3_cell, date, hour)
 ├─ Expand with zeros → incluir horas sin viajes (70-90% ceros)
 ├─ Normalization → z-score por celda
 └─ Feature engineering → lags (1h, 24h, 168h), cyclic encoding
+
+FASE 1B: PREPARACIÓN XGBOOST (xgboost_solution.ipynb)
+├─ Lee trips_cleaned.parquet SOLO MILÁN
+├─ Parseo fechas → hora local
+├─ Spatial join → secciones censales ACE
+├─ Merge con indicadores socioeconómicos ISTAT
+├─ Temporal aggregation → demanda (ACE, date, hour)
+└─ Expand with zeros + lags
 
 FASE 2A: SOLUCIÓN XGBOOST
 ├─ Features: hour, day_of_week, month, lag_1h, lag_24h, rolling_mean_3h
@@ -309,7 +341,7 @@ FASE 2B: SOLUCIÓN LSTM (Domain Adaptation)
 └─ Scope: Multi-ciudad + domain adaptation a ciudad nueva
 ```
 
-**Importancia de ambas soluciones:**
+**Importancia de ambas alternativas:**
 - **XGBoost:** Baseline rápido, interpretable, compara directamente con literatura
 - **LSTM:** Captura patrones temporales, valida domain adaptation multi-ciudad
 - **Preprocesamiento:** Punto crítico común (H3 spatial discretization, normalization, handling sparsity)
@@ -429,9 +461,11 @@ LSTM Fine-tuned München (7d)    0.9590 1.5712  0.6632
 
 ## 📚 Estructura del TFG
 
-### Capítulos (Actualizado — 23 Abril 2026)
+### Capítulos (Actualizado — 11 Mayo 2026)
 
-**Cambio estructural:** se fusionan "State of the Art" y "Enabling Technologies" en un único capítulo 2 "Background". Los antiguos apéndices "Impact" y "Budget" pasan a ser capítulos regulares. Estructura final: **7 capítulos**.
+**Cambios estructurales:**
+- (23 abr) Fusión "State of the Art" + "Enabling Technologies" → capítulo 2 "Background". Impact y Budget pasan a capítulos regulares. Estructura final: **7 capítulos**.
+- (11 may) **Feedback del tutor:** (a) el objetivo principal es desarrollar **un único framework** de predicción de demanda, con dos **alternativas de modelado** (XGBoost y LSTM), no dos frameworks separados; (b) G4 pasa de "comparison" a "**evaluation** of the models"; (c) se invierte el orden de 2.1/2.2 → primero Related Work, luego Enabling Technologies (narrativa más natural: primero qué se ha hecho, luego con qué herramientas). Secciones 3.2/3.3 renombradas de "Framework" a "Modelling Alternative".
 
 ```
 1. INTRODUCTION
@@ -440,36 +474,36 @@ LSTM Fine-tuned München (7d)    0.9590 1.5712  0.6632
    └─ 1.3 Structure of this Document
 
 2. BACKGROUND
-   ├─ 2.1 Enabling Technologies
-   │   ├─ 2.1.1 Python Scientific Stack
-   │   ├─ 2.1.2 H3 Hexagonal Hierarchical Index
-   │   ├─ 2.1.3 Machine Learning Fundamentals
-   │   ├─ 2.1.4 LSTM Networks
-   │   ├─ 2.1.5 Transfer Learning and Domain Adaptation
-   │   └─ 2.1.6 Feature Engineering and Normalisation
-   └─ 2.2 Related Work
-       ├─ 2.2.1 Evolution of Carsharing Systems
-       ├─ 2.2.2 Demand Prediction in Urban Mobility
-       └─ 2.2.3 Research Gap and Contribution
+   ├─ 2.1 Related Work
+   │   ├─ 2.1.1 Evolution of Carsharing Systems
+   │   ├─ 2.1.2 Demand Prediction in Urban Mobility
+   │   └─ 2.1.3 Research Gap and Contribution
+   └─ 2.2 Enabling Technologies
+       ├─ 2.2.1 Python Scientific Stack
+       ├─ 2.2.2 H3 Hexagonal Hierarchical Index
+       ├─ 2.2.3 Machine Learning Fundamentals
+       ├─ 2.2.4 LSTM Networks
+       ├─ 2.2.5 Transfer Learning and Domain Adaptation
+       └─ 2.2.6 Feature Engineering and Normalisation
 
 3. ARCHITECTURE AND METHODOLOGY
    ├─ 3.1 Data Acquisition and Exploration
    │   ├─ 3.1.1 Data Sources (10 European cities)
    │   ├─ 3.1.2 Data Cleaning and Standardisation
    │   └─ 3.1.3 Exploratory Data Analysis
-   ├─ 3.2 First Predictive Framework: XGBoost (City of Milan)
+   ├─ 3.2 Gradient-Boosted Baseline: XGBoost on Milan
    │   ├─ 3.2.1 Spatial Aggregation: ACE Zoning
    │   ├─ 3.2.2 Feature Engineering
    │   ├─ 3.2.3 Model Architecture and Hyperparameters
    │   └─ 3.2.4 Training Procedure
-   └─ 3.3 Second Predictive Framework: LSTM with Cross-City Domain Adaptation
+   └─ 3.3 Recurrent Alternative: LSTM with Cross-City Domain Adaptation
        ├─ 3.3.1 Spatial Discretisation: H3 Hexagonal Grid
        ├─ 3.3.2 Feature Engineering (cyclic encoding + sliding window)
        ├─ 3.3.3 Model Architecture
        ├─ 3.3.4 Training Procedure
        └─ 3.3.5 Transfer Learning Setup
 
-4. TRAINING, EVALUATION AND MODEL COMPARISON
+4. EVALUATION AND MODEL COMPARISON
    ├─ 4.1 XGBoost Results (Milan)
    │   ├─ 4.1.1 Regression Model
    │   ├─ 4.1.2 Classification Model
@@ -512,17 +546,19 @@ FRONT MATTER
 └─ Agradecimientos
 ```
 
-### Decisiones estructurales (23 Abril 2026)
+### Decisiones estructurales (23 abr — 11 may 2026)
 
-1. **Fusión Background**: los antiguos capítulos "State of the Art" y "Enabling Technologies" se integran en un único capítulo 2 con dos secciones (2.1 Enabling Technologies + 2.2 Related Work). Esto evita redundancia y facilita una transición natural del contexto técnico a la revisión bibliográfica.
+1. **Fusión Background**: los antiguos capítulos "State of the Art" y "Enabling Technologies" se integran en un único capítulo 2 con dos secciones. **(11 may)** Orden invertido por indicación del tutor: primero 2.1 Related Work (contexto de lo que se ha hecho), luego 2.2 Enabling Technologies (herramientas que se van a usar). Flujo narrativo más natural.
 
-2. **Arquitectura con estructura híbrida**: se mantiene una sección común 3.1 para adquisición y exploración de datos (limpieza, estandarización, EDA), pero los detalles de preprocesamiento específicos de cada modelo (agregación ACE para XGBoost vs. discretización H3 para LSTM, feature engineering distinto) se describen dentro de las secciones 3.2 y 3.3 respectivamente. Así se evita fragmentar la narrativa de cada framework.
+2. **Un framework, dos alternativas de modelado (11 may)**: por feedback del tutor, el objetivo principal es desarrollar **un único framework** de predicción de demanda de carsharing. XGBoost y LSTM son **alternativas de modelado** dentro de ese framework, no frameworks independientes. Esto se refleja en los títulos de §3.2 y §3.3 ("Gradient-Boosted Baseline" / "Recurrent Alternative") y en la redacción de los objetivos del Cap. 1 (G1 = un framework, G4 = evaluación de los modelos, no "comparación").
 
-3. **XGBoost primero, LSTM después**: se mantiene el orden narrativo "enfoque inicial → contribución principal" tanto en el capítulo 3 (metodología) como en el 4 (resultados), seguido siempre de análisis comparativo.
+3. **Arquitectura con estructura híbrida**: se mantiene una sección común 3.1 para adquisición y exploración de datos (limpieza, estandarización, EDA), pero los detalles de preprocesamiento específicos de cada alternativa (agregación ACE para XGBoost vs. discretización H3 para LSTM, feature engineering distinto) se describen dentro de §3.2 y §3.3 respectivamente.
 
-4. **Ambos modelos al mismo nivel**: tras la indicación del tutor, los objetivos del proyecto tratan XGBoost y LSTM como contribuciones equivalentes. La comparación sistemática entre ambos se formula como el cuarto objetivo (G4) y es el eje vertebrador del capítulo 4.
+4. **XGBoost primero, LSTM después**: se mantiene el orden narrativo "baseline → alternativa principal" tanto en el capítulo 3 (metodología) como en el 4 (resultados), seguido siempre de análisis comparativo.
 
-5. **Impact y Budget como capítulos**: se sacan del apéndice y pasan a ser capítulos regulares (6 y 7), siguiendo la convención de la plantilla GSI-ETSIT más reciente.
+5. **Ambos modelos al mismo nivel**: los objetivos del proyecto tratan XGBoost y LSTM como contribuciones equivalentes. La evaluación sistemática de ambos (G4) es el eje vertebrador del capítulo 4.
+
+6. **Impact y Budget como capítulos**: se sacan del apéndice y pasan a ser capítulos regulares (6 y 7), siguiendo la convención de la plantilla GSI-ETSIT más reciente.
 
 ---
 
@@ -556,15 +592,19 @@ FRONT MATTER
    - Visualización: `results/mapa_h3_milan.png`
    - Análisis espacial de demanda por H3 cell
 
-**PIPELINE DE LIMPIEZA (27 abr 2026)**
+**PIPELINE DE LIMPIEZA (27 abr 2026, reorganizado 25 may 2026)**
 5. Módulo `trip_cleaning.py`
    - Centraliza la limpieza para ambos frameworks
    - 5 filtros: distancia, duración (×2), outliers geográficos, duplicados
    - Función `clean_trips(df, city)` + utilidades `parse_date_local`, `parse_date_utc`, `parse_coord`, `trip_quality_summary`
-6. Script `apply_cleaning_patches.py`
+6. Script `build_cleaned_dataset.py` (25 may 2026)
+   - Carga 10 CSVs crudos, aplica `clean_trips()`, guarda `datasets/trips_cleaned.parquet`
+   - Punto de entrada único para la limpieza: los notebooks ya no duplican esta lógica
+   - Imprime auditoría del cleaning al ejecutar
+7. Script `apply_cleaning_patches.py` (histórico)
    - Parchea ambos notebooks con `nbformat` (sin riesgo de corromper JSON)
    - Idempotente, crea backups `.bak`
-7. Auditoría completa del cleaning ejecutada (4.42% viajes descartados global)
+8. Auditoría completa del cleaning ejecutada (4.42% viajes descartados global)
 
 **DOCUMENTACIÓN & VERSIONADO**
 8. GitHub
@@ -573,9 +613,14 @@ FRONT MATTER
    - Commits documentados ✅
    - Estructura clara (datasets/, results/) ✅
 
-**ESCRITURA TFG (27 abr 2026)**
-9. Capítulo 3 — Architecture and Methodology
-   - 3.1 introducción: redactado en inglés (1 pág, contextualiza car2go + 3 subsecciones)
+**ESCRITURA TFG (27 abr — 11 may 2026)**
+9. Capítulo 2 — Background
+   - 2.1 Related Work (antes 2.2): redactado en inglés ✅ — pendiente revisión con tutor + último párrafo de Boldrini
+   - 2.2 Enabling Technologies (antes 2.1): en progreso
+     - 2.2.1 Python Scientific Stack: ✅ redactado (17 may 2026) — Python, Google Colab, Pandas, NumPy, scikit-learn, XGBoost, PyTorch, SHAP, GeoPandas+Shapely, Matplotlib+Seaborn+Folium. H3 excluido (tiene §2.2.2 propio). Entradas BibTeX proporcionadas.
+10. Capítulo 3 — Architecture and Methodology
+   - 3.1 introducción (antes de 3.1.1): redactado en inglés (1 pág, contextualiza car2go + 3 subsecciones)
+   - **3.1 intro ampliada (11 may 2026):** añadida introducción justo después de `\section{Data Acquisition and Exploration}` y antes de `\subsection{Data Sources}`. Define formalmente el problema de predicción (demanda pickup por zona-hora), presenta los dos frameworks (XGBoost single-city baseline con zonas ACE + LSTM cross-city domain adaptation con H3), incluye `Figure~\ref{fig:global-arch}` (diagrama de alto nivel de la arquitectura global) y conecta con las secciones 3.2/3.3. Estilo: prosa académica en inglés, con `\begin{itemize}` para describir cada framework y un entorno `\begin{figure}` placeholder para la figura.
    - 3.1.1 Data Sources: redactado en inglés con `longtable` LaTeX (incluye datasets auxiliares ISTAT)
    - Tabla 3.1 (volumen por ciudad) en LaTeX con `booktabs`
    - 3.1.2 Data Cleaning: pendiente de redactar (auditoría disponible)
@@ -584,16 +629,17 @@ FRONT MATTER
 ### 🔄 En Progreso
 
 1. **Escritura LaTeX del TFG**
-   - Cap. 3.1 introducción + 3.1.1: ✅ pegado en Overleaf
+   - Cap. 2.1 Related Work: ✅ redactado (a falta de revisión con tutor + último párrafo sobre Boldrini)
+   - Cap. 2.2 Enabling Technologies: en progreso (2.2.1 Python Scientific Stack ✅)
+   - Cap. 3.1 introducción + intro ampliada (alternativas de modelado + fig:global-arch) + 3.1.1: ✅ pegado en Overleaf
    - Cap. 3.1.2: pendiente (con números reales de auditoría)
    - Cap. 3.1.3: pendiente (gráficos: perfil horario, semanal, % ceros, volumen por ciudad)
    - Cap. 3.2 (XGBoost) + 3.3 (LSTM): pendiente
-   - Cap. 4 (Resultados): pendiente
-   - Cap. 2 (Background + Related Work): pendiente
+   - Cap. 4 (Evaluación): pendiente
 
 2. **Regeneración de `dataset_h3_multicidad.parquet`**
-   - El parquet actual se hizo con datos sin limpiar
-   - Tras parchear notebooks con `apply_cleaning_patches.py`, ejecutar `lstm_dataset_creation.ipynb` de nuevo
+   - Ejecutar primero `python build_cleaned_dataset.py` para generar `datasets/trips_cleaned.parquet`
+   - Luego ejecutar `lstm_dataset_creation.ipynb` (ahora lee del parquet limpio compartido)
    - Reentrenar LSTM y XGBoost para validar que las métricas no cambian sustancialmente
 
 3. **Sincronización Overleaf-GitHub**
@@ -602,12 +648,11 @@ FRONT MATTER
 
 ### ⏭️ Por Hacer
 
-1. **Escribir Cap 2: Estado del Arte**
-   - Evolución carsharing
-   - Soluciones similares
-   - Problemas identificados
+1. **Completar Cap 2: Background**
+   - 2.1 Related Work: revisión con tutor + último párrafo Boldrini
+   - 2.2 Enabling Technologies: redactar completo
 
-2. **Completar Cap 4: Arquitectura**
+2. **Completar Cap 3: Arquitectura**
    - Detalles dataset
    - EDA figuras
    - Normalización
@@ -633,12 +678,11 @@ FRONT MATTER
 
 ### ALTA PRIORIDAD
 
-- [ ] **Cap 2: Estado del Arte** (1-2 semanas)
-  - Investigar evolución carsharing
-  - Enumerar soluciones similares (Zipcar, Enjoy, etc.)
-  - Detallar problemas: sparsity, temporal shifts, heterogeneidad
+- [x] **Cap 2.1: Related Work** — ✅ redactado, pendiente revisión tutor + último párrafo Boldrini
+- [ ] **Cap 2.2: Enabling Technologies** (1-2 semanas)
+  - Python Scientific Stack, H3, ML fundamentals, LSTM, Transfer Learning, Feature Engineering
 
-- [ ] **Cap 4: Arquitectura** (2-3 semanas)
+- [ ] **Cap 3: Arquitectura** (2-3 semanas)
   - Incluir figuras EDA
   - Diagramas del pipeline
   - Ecuaciones normalización, sliding window
@@ -669,17 +713,19 @@ FRONT MATTER
 https://github.com/juanruu/TFG---Carsharing-Estimation-Demand
 ```
 
-### Notebooks Principales
+### Scripts y Notebooks Principales
 
-| Notebook | Propósito | Entrada | Salida |
-|----------|-----------|---------|--------|
-| `xgboost_solution.ipynb` | XGBoost baseline (regresión + clasificación) | `cs_datasets/*.txt` | XGBoost metrics |
-| `lstm_dataset_creation.ipynb` | H3 discretization, normalization, feature engineering | `cs_datasets/*.txt` | `datasets/dataset_h3_multicidad.parquet` |
+| Archivo | Propósito | Entrada | Salida |
+|---------|-----------|---------|--------|
+| `build_cleaned_dataset.py` | Limpieza compartida (10 ciudades) | `cs_datasets/*.txt` | `datasets/trips_cleaned.parquet` |
+| `xgboost_solution.ipynb` | XGBoost baseline (regresión + clasificación) | `trips_cleaned.parquet` (solo Milán) | XGBoost metrics |
+| `lstm_dataset_creation.ipynb` | H3 discretization, normalization, feature engineering | `trips_cleaned.parquet` (completo) | `datasets/dataset_h3_multicidad.parquet` |
 | `lstm_predictions.ipynb` | LSTM training, zero-shot eval, fine-tuning, comparison | `datasets/dataset_h3_multicidad.parquet` | `results/lstm_pretrained.pt`, métricas |
 | `mapa_h3_milan.ipynb` | Visualización de celdas H3 | `datasets/dataset_h3_multicidad.parquet` | `results/mapa_h3_milan.png` |
 
 ### Datasets
-- `dataset_h3_multicidad.parquet` (1.8 GB) — Dato principal
+- `trips_cleaned.parquet` — Dataset limpio compartido (10 ciudades, ~803K viajes)
+- `dataset_h3_multicidad.parquet` (1.8 GB) — Dataset H3 agregado para LSTM
 - `cs_datasets/*.txt` (845 KB total) — Datos crudos
 - `dati-cpa_2011/` — Indicadores socioeconómicos ISTAT (CPA 2011) usados en XGBoost
 - `mapa_lombardia/`, `mapa_lazio/`, `mapa_piamonte/`, `mapa_toscana/` — Shapefiles regionales con ACE
@@ -795,8 +841,10 @@ Distancia euclidiana 23→0 en espacio sin/cos ≈ 0.27 (pequeña ✓)
 
 **Version History:**
 - v1.0 (Abril 2026): Creación de memoria con resultados LSTM y H3-7
+- v1.1 (Mayo 2026): Introducción ampliada §3.1 (definición formal del problema, dos frameworks, figura global_architecture)
+- v1.2 (25 Mayo 2026): Reorganización del pipeline de datos — `build_cleaned_dataset.py` genera dataset limpio compartido; notebooks consumen parquet en vez de CSVs crudos
 
 ---
 
-**Última actualización:** Abril 22, 2026  
-**Estado:** 🔄 En progreso — Escritura LaTeX TFG iniciada
+**Última actualización:** Mayo 25, 2026  
+**Estado:** 🔄 En progreso — Reorganización pipeline datos + Escritura LaTeX TFG
