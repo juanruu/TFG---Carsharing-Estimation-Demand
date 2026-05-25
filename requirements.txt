@@ -10,5 +10,4 @@ torch>=2.0.0
 scikit-learn>=1.2.0
 matplotlib>=3.6.0
 seaborn>=0.12.0
-nbformat>=5.7.0
 shap>=0.42.0
